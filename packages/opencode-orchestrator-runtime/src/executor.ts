@@ -1,7 +1,16 @@
 import { buildSessionPermissions } from "./core/permissions.js";
 import type { Intent, TaskEvent, TaskState } from "./core/types.js";
-import { commitReviewedTree, ensureWorktree, PermanentError, prepareWorktree, removeWorktree, snapshotTree } from "./git.js";
-import { type OpenCodeClient, OpenCodeError, type SessionInfo } from "./opencode.js";
+import type { ModelRef } from "./core/workflow.js";
+import {
+  commitReviewedTree,
+  ensureWorktree,
+  prepareWorktree,
+  removeWorktree,
+  snapshotTree,
+} from "./git.js";
+import { type OpenCodeClient, OpenCodeError } from "./opencode.js";
+import type { SessionInfo } from "./opencode-schemas.js";
+import { PermanentError } from "./permanent-error.js";
 
 export const WORKER_AGENT = "orchestrator-worker";
 
@@ -11,41 +20,51 @@ export interface ExecuteContext {
 }
 
 /** Runs one intent. Returns the event its result produces, if any. Throws PermanentError when retrying cannot help. */
-export async function executeIntent(intent: Intent, context: ExecuteContext): Promise<TaskEvent | undefined> {
+export async function executeIntent(
+  intent: Intent,
+  context: ExecuteContext,
+): Promise<TaskEvent | undefined> {
   const { opencode, task } = context;
 
   try {
     switch (intent.kind) {
       case "ensure-worktree":
-        await ensureWorktree({ projectDir: task.projectDir, path: intent.path, branch: intent.branch, base: intent.base });
+        await ensureWorktree({
+          projectDir: task.projectDir,
+          path: intent.path,
+          branch: intent.branch,
+          base: intent.base,
+        });
         return undefined;
 
       case "prepare-worktree":
-        await prepareWorktree({ projectDir: intent.projectDir, path: intent.path, copy: intent.copy, command: intent.command });
+        await prepareWorktree({
+          projectDir: intent.projectDir,
+          path: intent.path,
+          copy: intent.copy,
+          command: intent.command,
+        });
         return undefined;
 
       case "create-session":
         return await createSession(intent, context);
 
-      case "switch-model": {
-        const models = await opencode.models(task.worktreePath);
-        const known = models.some((model) => model.providerID === intent.model.providerID && model.id === intent.model.id);
-        if (!known) throw new PermanentError(`модели ${intent.model.providerID}/${intent.model.id} нет в OpenCode`);
-
-        await opencode.switchModel(intent.sessionID, task.worktreePath, intent.model);
-        const session = await opencode.session(intent.sessionID, task.worktreePath);
-        if (session?.model?.providerID !== intent.model.providerID || session.model.id !== intent.model.id) {
-          throw new Error(`сессия ${intent.sessionID} не переключилась на ${intent.model.providerID}/${intent.model.id}`);
-        }
+      case "switch-model":
+        await switchModel(intent.sessionID, intent.model, context);
         return undefined;
-      }
 
       case "send-prompt":
-        await opencode.prompt(intent.sessionID, task.worktreePath, { id: intent.messageID, text: intent.text });
+        await opencode.prompt(intent.sessionID, task.worktreePath, {
+          id: intent.messageID,
+          text: intent.text,
+        });
         return undefined;
 
       case "notify-lead":
-        await opencode.note(intent.sessionID, intent.directory, { id: intent.messageID, text: intent.text });
+        await opencode.note(intent.sessionID, intent.directory, {
+          id: intent.messageID,
+          text: intent.text,
+        });
         return undefined;
 
       case "abort-session":
@@ -53,10 +72,19 @@ export async function executeIntent(intent: Intent, context: ExecuteContext): Pr
         return undefined;
 
       case "snapshot-tree":
-        return { type: "tree-snapshotted", stageRunID: intent.stageRunID, tree: await snapshotTree(intent.path) };
+        return {
+          type: "tree-snapshotted",
+          stageRunID: intent.stageRunID,
+          tree: await snapshotTree(intent.path),
+        };
 
       case "commit": {
-        const result = await commitReviewedTree({ path: intent.path, base: intent.base, tree: intent.tree, message: intent.message });
+        const result = await commitReviewedTree({
+          path: intent.path,
+          base: intent.base,
+          tree: intent.tree,
+          message: intent.message,
+        });
         return {
           type: "commit-result",
           stageRunID: intent.stageRunID,
@@ -70,14 +98,44 @@ export async function executeIntent(intent: Intent, context: ExecuteContext): Pr
         return undefined;
     }
   } catch (error) {
-    if (error instanceof OpenCodeError && error.status >= 400 && error.status < 500 && error.status !== 429) {
+    if (
+      error instanceof OpenCodeError &&
+      error.status >= 400 &&
+      error.status < 500 &&
+      error.status !== 429
+    ) {
       throw new PermanentError(error.message);
     }
     throw error;
   }
 }
 
-async function createSession(intent: Extract<Intent, { kind: "create-session" }>, context: ExecuteContext): Promise<TaskEvent> {
+/** OpenCode does not validate the model it is given, so the runtime checks it before and after. */
+async function switchModel(
+  sessionID: string,
+  model: ModelRef,
+  context: ExecuteContext,
+): Promise<void> {
+  const { opencode, task } = context;
+  const label = `${model.providerID}/${model.id}`;
+
+  const models = await opencode.models(task.worktreePath);
+  const known = models.some(
+    (candidate) => candidate.providerID === model.providerID && candidate.id === model.id,
+  );
+  if (!known) throw new PermanentError(`модели ${label} нет в OpenCode`);
+
+  await opencode.switchModel(sessionID, task.worktreePath, model);
+  const session = await opencode.session(sessionID, task.worktreePath);
+  if (session?.model?.providerID !== model.providerID || session.model.id !== model.id) {
+    throw new Error(`сессия ${sessionID} не переключилась на ${label}`);
+  }
+}
+
+async function createSession(
+  intent: Extract<Intent, { kind: "create-session" }>,
+  context: ExecuteContext,
+): Promise<TaskEvent> {
   const { opencode, task } = context;
   const metadata = { orchestratorTask: task.id, attempt: intent.attempt };
 
@@ -130,12 +188,21 @@ function verifySession(
   metadata: { orchestratorTask: string; attempt: number },
 ): TaskEvent {
   const problems: string[] = [];
-  if (session.location.directory !== intent.directory) problems.push(`каталог ${session.location.directory}`);
-  if (session.metadata?.orchestratorTask !== metadata.orchestratorTask || session.metadata?.attempt !== metadata.attempt) {
+  if (session.location.directory !== intent.directory)
+    problems.push(`каталог ${session.location.directory}`);
+  if (
+    session.metadata?.orchestratorTask !== metadata.orchestratorTask ||
+    session.metadata?.attempt !== metadata.attempt
+  ) {
     problems.push(`metadata ${JSON.stringify(session.metadata ?? {})}`);
   }
   if (session.agent !== WORKER_AGENT) problems.push(`агент ${session.agent ?? "нет"}`);
 
-  if (problems.length > 0) return { type: "session-collision", attempt: intent.attempt, detail: problems.join(", ") };
+  if (problems.length > 0)
+    return {
+      type: "session-collision",
+      attempt: intent.attempt,
+      detail: problems.join(", "),
+    };
   return { type: "session-confirmed", attempt: intent.attempt };
 }

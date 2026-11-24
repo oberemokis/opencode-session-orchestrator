@@ -1,16 +1,32 @@
 import { randomUUID } from "node:crypto";
 import { Plugin } from "@opencode/plugin";
-import { callRuntime, defaultStateDir, RuntimeUnavailableError, socketPath } from "opencode-orchestrator-runtime/rpc-client";
+import {
+  callRuntime,
+  defaultStateDir,
+  RuntimeUnavailableError,
+  socketPath,
+} from "opencode-orchestrator-runtime/rpc-client";
+import {
+  CommandReplySchema,
+  QuestionsReplySchema,
+  StatusReplySchema,
+  type TaskSummary,
+} from "opencode-orchestrator-runtime/rpc-contract";
 import { z } from "zod";
-import { orchestratorRpc, type QuestionView, type TaskSummary } from "./rpc.ts";
+import { orchestratorRpc } from "./rpc.ts";
 
 const WORKER_AGENT = "orchestrator-worker";
-const NOT_RUNNING = "[оркестратор] runtime не запущен. Запусти в терминале: opencode-orchestrator serve";
+const NOT_RUNNING =
+  "[оркестратор] runtime не запущен. Запусти в терминале: opencode-orchestrator serve";
 
 const socket = socketPath(defaultStateDir());
 
-function runtime<Result>(method: string, input: unknown = {}): Promise<Result> {
-  return callRuntime(socket, method, input) as Promise<Result>;
+function runtime<Schema extends z.ZodType>(
+  method: string,
+  schema: Schema,
+  input: unknown = {},
+): Promise<z.infer<Schema>> {
+  return callRuntime({ socket, method, schema, input });
 }
 
 function describeError(error: unknown): string {
@@ -35,10 +51,14 @@ export default Plugin.define({
       editor.update(WORKER_AGENT, (agent) => {
         // Agent.Name is a branded string; the literal is a valid name.
         agent.name = WORKER_AGENT as typeof agent.name;
-        agent.description = "Исполнитель этапа задачи оркестратора. Запускается runtime, не выбирай вручную.";
+        agent.description =
+          "Исполнитель этапа задачи оркестратора. Запускается runtime, не выбирай вручную.";
         agent.mode = "primary";
         agent.hidden = true;
-        agent.permissions = [...(agent.permissions ?? []), { action: "subagent", resource: "*", effect: "deny" }];
+        agent.permissions = [
+          ...(agent.permissions ?? []),
+          { action: "subagent", resource: "*", effect: "deny" },
+        ];
       });
     });
 
@@ -61,26 +81,39 @@ export default Plugin.define({
     await ctx.command.transform((editor) => {
       editor.add({
         name: "orchestrate",
-        description: "Задача оркестратору: /orchestrate <текст>, /orchestrate stop <taskID>, без аргументов статус",
+        description:
+          "Задача оркестратору: /orchestrate <текст>, /orchestrate stop <taskID>, без аргументов статус",
         execute: async ({ sessionID, prompt }) => {
           const reply = (text: string) =>
-            ctx.session.synthetic({ sessionID, id: `msg_oo${randomUUID().replaceAll("-", "")}`, text, resume: false });
+            ctx.session.synthetic({
+              sessionID,
+              id: `msg_oo${randomUUID().replaceAll("-", "")}`,
+              text,
+              resume: false,
+            });
           const text = prompt.text.trim();
           const stop = /^stop\s+(\S+)\s*$/.exec(text);
 
           try {
             if (!text) {
-              const { tasks } = await runtime<{ tasks: TaskSummary[] }>("status");
+              const { tasks } = await runtime("status", StatusReplySchema);
               await reply(formatStatus(tasks));
               return;
             }
             if (stop?.[1]) {
-              const result = await runtime<{ ok: boolean; error?: string }>("task.stop", { commandID: randomUUID(), taskID: stop[1] });
-              await reply(result.ok ? `[оркестратор] задача ${stop[1]} остановлена` : `[оркестратор] не остановлена: ${result.error}`);
+              const result = await runtime("task.stop", CommandReplySchema, {
+                commandID: randomUUID(),
+                taskID: stop[1],
+              });
+              await reply(
+                result.ok
+                  ? `[оркестратор] задача ${stop[1]} остановлена`
+                  : `[оркестратор] не остановлена: ${result.error}`,
+              );
               return;
             }
 
-            const result = await runtime<{ ok: boolean; taskID?: string; error?: string }>("task.start", {
+            const result = await runtime("task.start", CommandReplySchema, {
               commandID: randomUUID(),
               text,
               sessionID,
@@ -101,7 +134,7 @@ export default Plugin.define({
     await ctx.rpc.register(orchestratorRpc, {
       questions: async () => {
         try {
-          const { questions } = await runtime<{ questions: QuestionView[] }>("question.get");
+          const { questions } = await runtime("question.get", QuestionsReplySchema);
           return { available: true, questions };
         } catch (error) {
           if (error instanceof RuntimeUnavailableError) return { available: false, questions: [] };
@@ -110,14 +143,14 @@ export default Plugin.define({
       },
       status: async () => {
         try {
-          const { tasks } = await runtime<{ tasks: TaskSummary[] }>("status");
+          const { tasks } = await runtime("status", StatusReplySchema);
           return { available: true, tasks };
         } catch (error) {
           if (error instanceof RuntimeUnavailableError) return { available: false, tasks: [] };
           throw error;
         }
       },
-      answer: async (input) => runtime("question.answer", input),
+      answer: async (input) => runtime("question.answer", CommandReplySchema, input),
     });
   },
 });

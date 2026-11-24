@@ -2,8 +2,7 @@ import { execFile } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-
-export class PermanentError extends Error {}
+import { PermanentError } from "./permanent-error.js";
 
 export interface RunResult {
   readonly code: number;
@@ -23,18 +22,32 @@ export function run(
     execFile(
       command,
       args,
-      { cwd: options.cwd, env: { ...process.env, ...options.env }, timeout: options.timeout ?? 120_000, maxBuffer: 64 * 1024 * 1024 },
+      {
+        cwd: options.cwd,
+        env: { ...process.env, ...options.env },
+        timeout: options.timeout ?? 120_000,
+        maxBuffer: 64 * 1024 * 1024,
+      },
       (error, stdout, stderr) => {
         const code = error ? (typeof error.code === "number" ? error.code : 1) : 0;
-        resolve({ code, stdout: String(stdout), stderr: String(stderr) || (error && code !== 0 && !stderr ? error.message : "") });
+        resolve({
+          code,
+          stdout: String(stdout),
+          stderr: String(stderr) || (error && code !== 0 && !stderr ? error.message : ""),
+        });
       },
     );
   });
 }
 
-export async function git(cwd: string, args: readonly string[], env?: NodeJS.ProcessEnv): Promise<string> {
+export async function git(
+  cwd: string,
+  args: readonly string[],
+  env?: NodeJS.ProcessEnv,
+): Promise<string> {
   const result = await run("git", args, { cwd, ...(env ? { env } : {}) });
-  if (result.code !== 0) throw new Error(`git ${args.join(" ")}: ${(result.stderr || result.stdout).trim()}`);
+  if (result.code !== 0)
+    throw new Error(`git ${args.join(" ")}: ${(result.stderr || result.stdout).trim()}`);
   return result.stdout.trim();
 }
 
@@ -53,12 +66,21 @@ export async function resolveCommit(projectDir: string, ref: string): Promise<st
   return git(projectDir, ["rev-parse", "--verify", `${ref}^{commit}`]);
 }
 
-export async function ensureWorktree(input: { projectDir: string; path: string; branch: string; base: string }): Promise<void> {
+export async function ensureWorktree(input: {
+  projectDir: string;
+  path: string;
+  branch: string;
+  base: string;
+}): Promise<void> {
   await git(input.projectDir, ["worktree", "prune"]);
-  excludeWorktrees(await git(input.projectDir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+  excludeWorktrees(
+    await git(input.projectDir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+  );
 
   const listing = await git(input.projectDir, ["worktree", "list", "--porcelain"]);
-  const registered = listing.split("\n\n").find((block) => block.split("\n")[0] === `worktree ${input.path}`);
+  const registered = listing
+    .split("\n\n")
+    .find((block) => block.split("\n")[0] === `worktree ${input.path}`);
   if (registered) {
     if (!registered.includes(`branch refs/heads/${input.branch}`)) {
       throw new PermanentError(`в ${input.path} уже стоит другой worktree`);
@@ -66,7 +88,12 @@ export async function ensureWorktree(input: { projectDir: string; path: string; 
     return;
   }
 
-  const branchExists = (await run("git", ["rev-parse", "--verify", `refs/heads/${input.branch}`], { cwd: input.projectDir })).code === 0;
+  const branchExists =
+    (
+      await run("git", ["rev-parse", "--verify", `refs/heads/${input.branch}`], {
+        cwd: input.projectDir,
+      })
+    ).code === 0;
   const args = branchExists
     ? ["worktree", "add", input.path, input.branch]
     : ["worktree", "add", "-b", input.branch, input.path, input.base];
@@ -89,23 +116,33 @@ export async function prepareWorktree(input: {
   command: string | null;
 }): Promise<void> {
   for (const relative of input.copy) {
-    if (isAbsolute(relative) || relative.split("/").includes("..")) throw new PermanentError(`setup.copy: недопустимый путь ${relative}`);
+    if (isAbsolute(relative) || relative.split("/").includes(".."))
+      throw new PermanentError(`setup.copy: недопустимый путь ${relative}`);
 
     const source = join(input.projectDir, relative);
-    if (!existsSync(source)) throw new PermanentError(`setup.copy: в главном checkout нет ${relative}`);
+    if (!existsSync(source))
+      throw new PermanentError(`setup.copy: в главном checkout нет ${relative}`);
     mkdirSync(dirname(join(input.path, relative)), { recursive: true });
     copyFileSync(source, join(input.path, relative));
   }
 
   if (!input.command) return;
-  const result = await run("sh", ["-c", input.command], { cwd: input.path, timeout: SETUP_TIMEOUT_MS });
+  const result = await run("sh", ["-c", input.command], {
+    cwd: input.path,
+    timeout: SETUP_TIMEOUT_MS,
+  });
   if (result.code !== 0) {
-    throw new PermanentError(`setup.command завершилась с кодом ${result.code}:\n${tail(`${result.stdout}${result.stderr}`)}`);
+    throw new PermanentError(
+      `setup.command завершилась с кодом ${result.code}:\n${tail(`${result.stdout}${result.stderr}`)}`,
+    );
   }
 }
 
 export async function snapshotTree(path: string): Promise<string> {
-  const index = join(tmpdir(), `oo-index-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const index = join(
+    tmpdir(),
+    `oo-index-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   const env = { GIT_INDEX_FILE: index };
 
   try {
@@ -117,9 +154,17 @@ export async function snapshotTree(path: string): Promise<string> {
   }
 }
 
-export type CommitOutcome = { kind: "ok" } | { kind: "hook-rejected"; output: string } | { kind: "tree-mismatch"; output: string };
+export type CommitOutcome =
+  | { kind: "ok" }
+  | { kind: "hook-rejected"; output: string }
+  | { kind: "tree-mismatch"; output: string };
 
-export async function commitReviewedTree(input: { path: string; base: string; tree: string; message: string }): Promise<CommitOutcome> {
+export async function commitReviewedTree(input: {
+  path: string;
+  base: string;
+  tree: string;
+  message: string;
+}): Promise<CommitOutcome> {
   const head = await git(input.path, ["rev-parse", "HEAD"]);
   if (head !== input.base) {
     const parent = await git(input.path, ["rev-parse", "HEAD^"]).catch(() => "");
@@ -129,11 +174,15 @@ export async function commitReviewedTree(input: { path: string; base: string; tr
   }
 
   await git(input.path, ["read-tree", input.tree]);
-  const result = await run("git", ["commit", "--quiet", "-m", input.message], { cwd: input.path, env: { GIT_TERMINAL_PROMPT: "0" } });
+  const result = await run("git", ["commit", "--quiet", "-m", input.message], {
+    cwd: input.path,
+    env: { GIT_TERMINAL_PROMPT: "0" },
+  });
   const output = tail(`${result.stdout}${result.stderr}`.trim());
 
   if (result.code !== 0) {
-    if (/index\.lock|Unable to create|fatal: /i.test(output)) throw new Error(`git commit: ${output}`);
+    if (/index\.lock|Unable to create|fatal: /i.test(output))
+      throw new Error(`git commit: ${output}`);
     return { kind: "hook-rejected", output };
   }
 
@@ -171,9 +220,26 @@ const SENSITIVE = [
   /^\.pre-commit-config\.yaml$/,
 ];
 
-export async function diffTree(input: { cwd: string; base: string; tree: string }): Promise<FileChange[]> {
-  const numstat = await git(input.cwd, ["diff", "--numstat", "-z", "--no-renames", input.base, input.tree]);
-  const patch = await git(input.cwd, ["diff", "--no-renames", "--no-color", input.base, input.tree]);
+export async function diffTree(input: {
+  cwd: string;
+  base: string;
+  tree: string;
+}): Promise<FileChange[]> {
+  const numstat = await git(input.cwd, [
+    "diff",
+    "--numstat",
+    "-z",
+    "--no-renames",
+    input.base,
+    input.tree,
+  ]);
+  const patch = await git(input.cwd, [
+    "diff",
+    "--no-renames",
+    "--no-color",
+    input.base,
+    input.tree,
+  ]);
   const patches = splitPatch(patch);
 
   return numstat

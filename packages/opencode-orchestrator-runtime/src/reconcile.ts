@@ -1,4 +1,11 @@
-import type { SessionMessage, ToolPart } from "./opencode.js";
+import { z } from "zod";
+import { type SessionMessage, ToolPartSchema } from "./opencode-schemas.js";
+
+const StageReportInputSchema = z.looseObject({
+  stageRunID: z.string(),
+  outcome: z.enum(["passed", "stuck"]),
+  summary: z.unknown(),
+});
 
 export interface StageReport {
   readonly outcome: "passed" | "stuck";
@@ -16,7 +23,11 @@ export type TurnReading =
  * after `notice: "restart"` the server continues the turn on its own, so the session is still busy.
  * The last non-empty `stage_report` of this stage run wins, whatever the call status.
  */
-export function readTurn(messages: readonly SessionMessage[], promptID: string, stageRunID: string): TurnReading {
+export function readTurn(
+  messages: readonly SessionMessage[],
+  promptID: string,
+  stageRunID: string,
+): TurnReading {
   const start = messages.findIndex((message) => message.id === promptID);
   if (start === -1) return { kind: "not-delivered" };
 
@@ -40,22 +51,19 @@ export function readTurn(messages: readonly SessionMessage[], promptID: string, 
   if (lastIdle === -1 || lastIdle < lastRestart) return { kind: "running" };
 
   const idle = after[lastIdle];
-  const detail = idle?.error?.message ? `idle ${idle.outcome}: ${idle.error.message}` : `idle ${idle?.outcome ?? "?"}`;
+  const detail = idle?.error?.message
+    ? `idle ${idle.outcome}: ${idle.error.message}`
+    : `idle ${idle?.outcome ?? "?"}`;
   return { kind: "ended", report, detail };
 }
 
 function toReport(part: { readonly type: string }, stageRunID: string): StageReport | null {
-  if (!isToolPart(part) || part.name !== "stage_report") return null;
+  const tool = ToolPartSchema.safeParse(part);
+  if (!tool.success || tool.data.name !== "stage_report") return null;
 
-  const input = part.state.input;
-  if (typeof input !== "object" || input === null) return null;
+  const input = StageReportInputSchema.safeParse(tool.data.state.input);
+  if (!input.success || input.data.stageRunID !== stageRunID) return null;
 
-  const { stageRunID: reportedRun, outcome, summary } = input as Record<string, unknown>;
-  if (reportedRun !== stageRunID) return null;
-  if (outcome !== "passed" && outcome !== "stuck") return null;
+  const { outcome, summary } = input.data;
   return { outcome, summary: typeof summary === "string" ? summary : "" };
-}
-
-function isToolPart(part: { readonly type: string }): part is ToolPart {
-  return part.type === "tool" && "name" in part && "state" in part;
 }

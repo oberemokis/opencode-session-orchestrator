@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { discoverOpenCode } from "./opencode.js";
 import { callRuntime, defaultStateDir, RuntimeUnavailableError, socketPath } from "./rpc-client.js";
+import { StatusReplySchema } from "./rpc-contract.js";
 import { startRuntime } from "./runtime.js";
-import type { TaskSummary } from "./service.js";
 
 const USAGE = `opencode-orchestrator <команда>
 
@@ -31,14 +31,20 @@ async function serve(): Promise<void> {
 }
 
 async function status(): Promise<void> {
-  const result = (await callRuntime(socketPath(defaultStateDir()), "status")) as { tasks: TaskSummary[] };
-  if (result.tasks.length === 0) {
+  const { tasks } = await callRuntime({
+    socket: socketPath(defaultStateDir()),
+    method: "status",
+    schema: StatusReplySchema,
+  });
+  if (tasks.length === 0) {
     console.log("задач нет");
     return;
   }
-  for (const task of result.tasks) {
+  for (const task of tasks) {
     const question = task.question ? ` вопрос:${task.question}` : "";
-    console.log(`${task.id}  ${task.status.padEnd(7)} ${(task.stage ?? "-").padEnd(10)}${question}  ${task.text}`);
+    console.log(
+      `${task.id}  ${task.status.padEnd(7)} ${(task.stage ?? "-").padEnd(10)}${question}  ${task.text}`,
+    );
   }
 }
 
@@ -50,7 +56,8 @@ async function main(command: string | undefined): Promise<void> {
 }
 
 main(process.argv[2]).catch((error: unknown) => {
-  if (error instanceof RuntimeUnavailableError) console.error("runtime не запущен: opencode-orchestrator serve");
+  if (error instanceof RuntimeUnavailableError)
+    console.error("runtime не запущен: opencode-orchestrator serve");
   else console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 });
