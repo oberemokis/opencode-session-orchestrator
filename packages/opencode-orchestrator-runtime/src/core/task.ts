@@ -1,6 +1,6 @@
 import { deriveId } from "./ids.js";
 import type { ProjectConfig } from "./project-config.js";
-import type { Intent, TaskState } from "./types.js";
+import type { Step, TaskState } from "./types.js";
 import type { Workflow } from "./workflow.js";
 
 export interface NewTask {
@@ -39,15 +39,28 @@ export function createTask(input: NewTask): TaskState {
 }
 
 /** A new attempt keeps the worktree and branch, and gets a fresh session. */
-export function startAttempt(state: TaskState): { state: TaskState; intents: readonly Intent[] } {
+export function startAttempt(state: TaskState): Step {
   const attempt = state.attempt + 1;
   const sessionID = deriveId("ses_", state.salt, state.id, `attempt-${attempt}`);
-  const next: TaskState = { ...state, status: "active", attempt, sessionID, sessionReady: false, run: null, question: null };
+  const next: TaskState = {
+    ...state,
+    status: "active",
+    attempt,
+    sessionID,
+    sessionReady: false,
+    run: null,
+    question: null,
+  };
 
   return {
     state: next,
     intents: [
-      { kind: "ensure-worktree", path: state.worktreePath, branch: state.branch, base: state.baseCommit },
+      {
+        kind: "ensure-worktree",
+        path: state.worktreePath,
+        branch: state.branch,
+        base: state.baseCommit,
+      },
       {
         kind: "prepare-worktree",
         path: state.worktreePath,

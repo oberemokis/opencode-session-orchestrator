@@ -10,7 +10,12 @@ export const DEFAULT_ROUTE = {
   stages: [
     { id: "code", uses: "code" },
     { id: "show", uses: "show" },
-    { id: "deliver", uses: "deliver", delivery: { type: "local-commit" }, on: { failed: "goto:code" } },
+    {
+      id: "deliver",
+      uses: "deliver",
+      delivery: { type: "local-commit" },
+      on: { failed: "goto:code" },
+    },
   ],
 };
 
@@ -46,7 +51,7 @@ export function apply(state: TaskState, ...events: readonly TaskEvent[]): Trace 
 
   for (const event of events) {
     const decision = decide(current, event);
-    if (!decision.ok) throw new Error(`${event.type} rejected: ${decision.reject}`);
+    if (!decision.ok) throw new Error(`${event.type} rejected: ${decision.error}`);
     current = decision.state;
     intents.push(...decision.intents);
   }
@@ -54,7 +59,8 @@ export function apply(state: TaskState, ...events: readonly TaskEvent[]): Trace 
 }
 
 export function startedTask(route?: unknown): TaskState {
-  return apply(makeTask(route), { type: "slot-granted" }, { type: "session-confirmed", attempt: 1 }).state;
+  return apply(makeTask(route), { type: "slot-granted" }, { type: "session-confirmed", attempt: 1 })
+    .state;
 }
 
 export function runID(state: TaskState): string {
@@ -69,8 +75,14 @@ export function kinds(intents: readonly Intent[]): string[] {
 /** code passes, show snapshots tree `tree` and the question is open. */
 export function atShow(tree = "tree1", route?: unknown): TaskState {
   const coding = startedTask(route);
-  const passed = apply(coding, { type: "stage-reported", stageRunID: runID(coding), outcome: "passed", summary: "ok" });
-  return apply(passed.state, { type: "tree-snapshotted", stageRunID: runID(passed.state), tree }).state;
+  const passed = apply(coding, {
+    type: "stage-reported",
+    stageRunID: runID(coding),
+    outcome: "passed",
+    summary: "ok",
+  });
+  return apply(passed.state, { type: "tree-snapshotted", stageRunID: runID(passed.state), tree })
+    .state;
 }
 
 export function atDeliver(tree = "tree1"): TaskState {

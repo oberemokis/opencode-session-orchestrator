@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { hashText } from "./ids.js";
+import { describeIssue } from "./issue.js";
 import type { ParseResult } from "./workflow.js";
 
-const ProjectConfigSchema = z.strictObject({
+export const ProjectConfigSchema = z.strictObject({
   base: z.string().min(1).default("HEAD"),
   branchPrefix: z
     .string()
@@ -15,19 +16,16 @@ const ProjectConfigSchema = z.strictObject({
     })
     .default({ copy: [] }),
   deny: z.array(z.string().min(1)).default([]),
-  mcpRead: z.array(z.string().regex(/^[^\s]+_[^\s]+$/, "ожидается <сервер>_<инструмент>")).default([]),
+  mcpRead: z
+    .array(z.string().regex(/^[^\s]+_[^\s]+$/, "ожидается <сервер>_<инструмент>"))
+    .default([]),
 });
 
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
 
 export function parseProjectConfig(raw: unknown): ParseResult<ProjectConfig> {
   const parsed = ProjectConfigSchema.safeParse(raw ?? {});
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const path = issue?.path.map(String).join(".") || "(корень)";
-    const detail = issue?.code === "unrecognized_keys" ? `неизвестное поле ${issue.keys.join(", ")}` : issue?.message;
-    return { ok: false, error: `${path}: ${detail ?? "конфиг не прошёл проверку"}` };
-  }
+  if (!parsed.success) return { ok: false, error: describeIssue(parsed.error) };
 
   for (const path of parsed.data.setup.copy) {
     if (path.startsWith("/") || path.split("/").includes("..")) {

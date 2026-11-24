@@ -1,12 +1,15 @@
 import { deriveId } from "./ids.js";
-import { buildCodePrompt, buildCommitMessage, describeFinish, describeQuestion } from "./messages.js";
-import type { EscalateChoice, Intent, Question, TaskState } from "./types.js";
-import { type Stage, stageRetries } from "./workflow.js";
+import {
+  assertNever,
+  buildCodePrompt,
+  buildCommitMessage,
+  describeFinish,
+  describeQuestion,
+} from "./messages.js";
+import type { EscalateChoice, Intent, Question, Step, TaskState } from "./types.js";
+import { type Action, type Outcome, type Stage, stageRetries } from "./workflow.js";
 
-export interface Step {
-  readonly state: TaskState;
-  readonly intents: readonly Intent[];
-}
+type GotoAction = Extract<Action, { kind: "goto" | "goto-previous-code" }>;
 
 export interface ActionContext {
   readonly reason: string;
@@ -35,7 +38,8 @@ export function enterStage(state: TaskState, index: number, feedback: string | n
       const run = { id: runID, stageID: stage.id, phase: "working" as const, feedback };
       const next = { ...base, run };
       const intents: Intent[] = [];
-      if (stage.model) intents.push({ kind: "switch-model", sessionID: state.sessionID, model: stage.model });
+      if (stage.model)
+        intents.push({ kind: "switch-model", sessionID: state.sessionID, model: stage.model });
       intents.push({
         kind: "send-prompt",
         sessionID: state.sessionID,
@@ -74,46 +78,65 @@ export function enterStage(state: TaskState, index: number, feedback: string | n
   }
 }
 
-export function resolveAction(stage: Stage, outcome: string): string {
+export function resolveAction(stage: Stage, outcome: Outcome): Action {
   const configured = stage.on?.[outcome];
   if (configured) return configured;
-  if (outcome === "passed") return "next";
-  if (outcome === "changes-requested") return "goto:<previous-code>";
-  return "escalate";
+  if (outcome === "passed") return { kind: "next" };
+  if (outcome === "changes-requested") return { kind: "goto-previous-code" };
+  return { kind: "escalate" };
 }
 
-export function performAction(state: TaskState, action: string, context: ActionContext): Step {
+export function performAction(state: TaskState, action: Action, context: ActionContext): Step {
   const index = state.stageIndex;
 
-  if (action === "next") {
-    if (index + 1 >= state.workflow.stages.length) return finish(state, "done");
-    return enterStage(state, index + 1, null);
-  }
-  if (action === "stop") return finish(state, "stopped");
-  if (action === "escalate") return escalate(state, context.reason);
-  if (action === "repeat") return reenter(state, index, context);
+  switch (action.kind) {
+    case "next":
+      if (index + 1 >= state.workflow.stages.length) return finish(state, "done");
+      return enterStage(state, index + 1, null);
 
-  const targetIndex = resolveTarget(state, action);
-  if (targetIndex === undefined) return escalate(state, `переход ${action} некуда выполнить`);
-  return reenter(state, targetIndex, context);
+    case "stop":
+      return finish(state, "stopped");
+
+    case "escalate":
+      return escalate(state, context.reason);
+
+    case "repeat":
+      return reenter(state, index, context);
+
+    case "goto":
+    case "goto-previous-code": {
+      const targetIndex = findTarget(state, action);
+      if (targetIndex === undefined) {
+        return escalate(state, `переход ${describeGoto(action)} некуда выполнить`);
+      }
+      return reenter(state, targetIndex, context);
+    }
+
+    default:
+      return assertNever(action);
+  }
 }
 
-function resolveTarget(state: TaskState, action: string): number | undefined {
-  if (action === "goto:<previous-code>") {
+function findTarget(state: TaskState, action: GotoAction): number | undefined {
+  if (action.kind === "goto-previous-code") {
     for (let index = state.stageIndex - 1; index >= 0; index--) {
       if (state.workflow.stages[index]?.uses === "code") return index;
     }
     return undefined;
   }
 
-  const id = action.slice("goto:".length);
-  const index = state.workflow.stages.findIndex((stage) => stage.id === id);
+  const index = state.workflow.stages.findIndex((stage) => stage.id === action.stageID);
   return index === -1 ? undefined : index;
+}
+
+function describeGoto(action: GotoAction): string {
+  return action.kind === "goto" ? `goto:${action.stageID}` : "goto:<previous-code>";
 }
 
 function reenter(state: TaskState, targetIndex: number, context: ActionContext): Step {
   const isBackward = targetIndex <= state.stageIndex;
-  if (context.origin === "human" || !isBackward) return enterStage(state, targetIndex, context.feedback);
+  if (context.origin === "human" || !isBackward)
+    return enterStage(state, targetIndex, context.feedback);
 
   const target = state.workflow.stages[targetIndex];
   if (!target) return escalate(state, "этап перехода не найден");
@@ -122,13 +145,24 @@ function reenter(state: TaskState, targetIndex: number, context: ActionContext):
   if (used > stageRetries(target)) {
     return escalate(state, `исчерпаны повторы этапа «${target.id}»: ${context.reason}`);
   }
-  return enterStage({ ...state, retries: { ...state.retries, [target.id]: used } }, targetIndex, context.feedback);
+  return enterStage(
+    { ...state, retries: { ...state.retries, [target.id]: used } },
+    targetIndex,
+    context.feedback,
+  );
 }
 
 export function escalate(state: TaskState, reason: string): Step {
   const kind = state.workflow.stages[state.stageIndex]?.uses;
-  const options: EscalateChoice[] = kind === "show" || kind === "deliver" ? ["repeat", "stop"] : ["repeat", "next", "stop"];
-  return ask(state, { id: nextQuestionID(state), kind: "escalate", stageRunID: state.run?.id ?? null, reason, options });
+  const options: EscalateChoice[] =
+    kind === "show" || kind === "deliver" ? ["repeat", "stop"] : ["repeat", "next", "stop"];
+  return ask(state, {
+    id: nextQuestionID(state),
+    kind: "escalate",
+    stageRunID: state.run?.id ?? null,
+    reason,
+    options,
+  });
 }
 
 export function block(state: TaskState, reason: string): Step {
@@ -142,7 +176,10 @@ export function ask(state: TaskState, question: Question): Step {
     status,
     question,
     questionSeq: state.questionSeq + 1,
-    run: state.run && question.kind !== "blocked" ? { ...state.run, phase: "asking" as const } : state.run,
+    run:
+      state.run && question.kind !== "blocked"
+        ? { ...state.run, phase: "asking" as const }
+        : state.run,
   };
   const noted = note(withQuestion, describeQuestion(withQuestion, question));
   return { state: noted.state, intents: noted.intents };
