@@ -1,0 +1,23 @@
+{
+  "name": "opencode-orchestrator-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "opencode-orchestrator": "./dist/cli.js"
+  },
+  "exports": {
+    "./rpc-client": "./dist/rpc-client.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  }
+}
