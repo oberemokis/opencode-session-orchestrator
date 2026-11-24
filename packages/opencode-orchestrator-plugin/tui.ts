@@ -19,7 +19,8 @@ export default Plugin.define({
   id: "opencode-orchestrator",
   setup: (ctx) => {
     const rpc = ctx.client.rpc(orchestratorRpc);
-    const options = () => (ctx.location ? { location: { directory: ctx.location.directory } } : undefined);
+    const options = () =>
+      ctx.location ? { location: { directory: ctx.location.directory } } : undefined;
     const dismissed = new Set<string>();
     let open = false;
 
@@ -42,10 +43,16 @@ export default Plugin.define({
       for (;;) {
         const questions = await fetchQuestions();
         if (!questions) {
-          if (manual) context.ui.toast.show({ message: "runtime оркестратора не запущен", variant: "warning" });
+          if (manual)
+            context.ui.toast.show({
+              message: "runtime оркестратора не запущен",
+              variant: "warning",
+            });
           return;
         }
-        const pending = manual ? questions : questions.filter((question) => !dismissed.has(question.questionID));
+        const pending = manual
+          ? questions
+          : questions.filter((question) => !dismissed.has(question.questionID));
         if (pending.length === 0) {
           if (manual) context.ui.toast.show({ message: "Открытых вопросов нет", variant: "info" });
           return;
@@ -73,7 +80,10 @@ export default Plugin.define({
     }
 
     async function answerQuestion(context: Context, question: QuestionView): Promise<boolean> {
-      const choice = question.kind === "show" ? await reviewDiff(context, question) : await pickOption(context, question);
+      const choice =
+        question.kind === "show"
+          ? await reviewDiff(context, question)
+          : await pickOption(context, question);
       if (!choice) return false;
 
       let text: string | undefined;
@@ -97,7 +107,10 @@ export default Plugin.define({
           },
           options(),
         )
-        .catch((error: unknown) => ({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+        .catch((error: unknown) => ({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        }));
       context.ui.toast.show(
         result.ok
           ? { message: `${question.taskID}: ответ принят`, variant: "success" }
@@ -106,7 +119,10 @@ export default Plugin.define({
       return result.ok;
     }
 
-    async function reviewDiff(context: Context, question: QuestionView): Promise<string | undefined> {
+    async function reviewDiff(
+      context: Context,
+      question: QuestionView,
+    ): Promise<string | undefined> {
       for (;;) {
         let action: string | undefined;
         const file = await context.ui.dialog.select<string>({
@@ -117,9 +133,24 @@ export default Plugin.define({
             description: `+${change.additions} −${change.deletions}${change.sensitive ? " · чувствительный путь" : ""}`,
           })),
           actions: [
-            { bind: "ctrl+a", title: "одобрить", selection: "none", onTrigger: () => finish("approve") },
-            { bind: "ctrl+r", title: "нужны правки", selection: "none", onTrigger: () => finish("changes-requested") },
-            { bind: "ctrl+x", title: "остановить", selection: "none", onTrigger: () => finish("stop") },
+            {
+              bind: "ctrl+a",
+              title: "одобрить",
+              selection: "none",
+              onTrigger: () => finish("approve"),
+            },
+            {
+              bind: "ctrl+r",
+              title: "нужны правки",
+              selection: "none",
+              onTrigger: () => finish("changes-requested"),
+            },
+            {
+              bind: "ctrl+x",
+              title: "остановить",
+              selection: "none",
+              onTrigger: () => finish("stop"),
+            },
           ],
         });
         function finish(value: string) {
@@ -130,14 +161,23 @@ export default Plugin.define({
         if (action) return action;
         if (!file) return undefined;
         const change = question.files.find((candidate) => candidate.path === file);
-        await context.ui.dialog.alert({ title: file, message: change?.patch || "(бинарный файл или пустой дифф)" });
+        await context.ui.dialog.alert({
+          title: file,
+          message: change?.patch || "(бинарный файл или пустой дифф)",
+        });
       }
     }
 
-    async function pickOption(context: Context, question: QuestionView): Promise<string | undefined> {
+    async function pickOption(
+      context: Context,
+      question: QuestionView,
+    ): Promise<string | undefined> {
       return context.ui.dialog.select<string>({
         title: `${question.taskID}: ${question.reason ?? kindTitle(question.kind)}`,
-        options: question.options.map((option) => ({ title: OPTION_TITLES[option] ?? option, value: option })),
+        options: question.options.map((option) => ({
+          title: OPTION_TITLES[option] ?? option,
+          value: option,
+        })),
       });
     }
 
@@ -154,7 +194,8 @@ export default Plugin.define({
 
     const timer = setInterval(() => {
       void fetchQuestions().then((questions) => {
-        if (questions?.some((question) => !dismissed.has(question.questionID))) void showQuestions(false);
+        if (questions?.some((question) => !dismissed.has(question.questionID)))
+          void showQuestions(false);
       });
     }, POLL_MS);
     void showQuestions(false);

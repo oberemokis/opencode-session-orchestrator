@@ -45,7 +45,9 @@ export async function listenRpc(path: string, service: Service): Promise<Server>
       service
         .call(method, input)
         .then((result) => send({ ok: true, result }))
-        .catch((error: unknown) => send({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+        .catch((error: unknown) =>
+          send({ ok: false, error: error instanceof Error ? error.message : String(error) }),
+        );
     });
   });
 
