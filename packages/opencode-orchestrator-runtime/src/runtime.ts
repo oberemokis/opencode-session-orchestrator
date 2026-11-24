@@ -43,6 +43,13 @@ export async function startRuntime(options: RuntimeOptions): Promise<RuntimeHand
   if (!options.skipStartupChecks) await runStartupChecks(opencode, options.stateDir);
 
   const store = new Store(join(options.stateDir, "state.db"));
+  try {
+    store.verifyTasks();
+  } catch (error) {
+    store.close();
+    throw error;
+  }
+
   const engine = new Engine({
     store,
     opencode,
@@ -90,7 +97,9 @@ export async function runStartupChecks(opencode: OpenCodeClient, stateDir: strin
   });
   const minor = version.split(".").slice(0, 2).join(".");
   if (minor !== SUPPORTED_OPENCODE) {
-    throw new StartupError(`OpenCode ${version} не поддерживается: runtime проверен на ${SUPPORTED_OPENCODE}.x`);
+    throw new StartupError(
+      `OpenCode ${version} не поддерживается: runtime проверен на ${SUPPORTED_OPENCODE}.x`,
+    );
   }
 
   const signing = await checkUnattendedCommit(stateDir);

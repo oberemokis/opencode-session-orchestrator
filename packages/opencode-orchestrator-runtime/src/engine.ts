@@ -1,11 +1,15 @@
 import { decide } from "./core/decide.js";
-import { deriveId } from "./core/ids.js";
-import { type TaskEvent, type TaskState, TERMINAL_STATUSES } from "./core/types.js";
-import { stageStallMinutes } from "./core/workflow.js";
+import type { Result } from "./core/result.js";
+import {
+  type TaskEvent,
+  type TaskState,
+  type TaskStatus,
+  TERMINAL_STATUSES,
+} from "./core/types.js";
 import { executeIntent } from "./executor.js";
-import { PermanentError } from "./git.js";
 import type { OpenCodeClient } from "./opencode.js";
-import { readTurn } from "./reconcile.js";
+import { PermanentError } from "./permanent-error.js";
+import { SessionWatcher } from "./session-watcher.js";
 import type { Store, StoredIntent } from "./store.js";
 
 export interface EngineOptions {
@@ -20,29 +24,36 @@ export interface EngineOptions {
   readonly log: (line: string) => void;
 }
 
+export type ApplyOutcome = Result<{ readonly state: TaskState }>;
+
 export interface CommandRecord {
   readonly id: string;
   readonly method: string;
   readonly request: string;
-  readonly result: (decision: ApplyOutcome) => unknown;
+  readonly result: (outcome: ApplyOutcome) => unknown;
 }
 
-const SLOT_STATUSES = new Set(["active", "waiting", "blocked"]);
-
-export type ApplyOutcome = { ok: true; state: TaskState } | { ok: false; reject: string };
+const SLOT_STATUSES = new Set<TaskStatus>(["active", "waiting", "blocked"]);
+const MAX_RETRY_DELAY_MS = 30_000;
 
 export class Engine {
   readonly #options: EngineOptions;
+  readonly #watcher: SessionWatcher;
   readonly #running = new Set<string>();
   #queue: Promise<unknown> = Promise.resolve();
   #timer: NodeJS.Timeout | undefined;
   #stopped = false;
-  #recoveredAt = Date.now();
-  #opencodeDown = false;
   #inflight = new Set<Promise<unknown>>();
 
   constructor(options: EngineOptions) {
     this.#options = options;
+    this.#watcher = new SessionWatcher({
+      store: options.store,
+      opencode: options.opencode,
+      stallUnitMs: options.stallUnitMs,
+      log: options.log,
+      report: (taskID, event) => this.apply(taskID, event),
+    });
   }
 
   get store(): Store {
@@ -50,7 +61,7 @@ export class Engine {
   }
 
   start(): void {
-    this.#recoveredAt = Date.now();
+    this.#watcher.restartClocks();
     void this.serial(() => this.#schedule());
     this.#pump();
     void this.reconcile();
@@ -72,7 +83,7 @@ export class Engine {
   }
 
   /** Runs state changes one at a time, so decisions never interleave. */
-  serial<Result>(work: () => Result | Promise<Result>): Promise<Result> {
+  serial<Value>(work: () => Value | Promise<Value>): Promise<Value> {
     const next = this.#queue.then(work, work);
     this.#queue = next.catch(() => undefined);
     return next;
@@ -82,59 +93,25 @@ export class Engine {
   apply(taskID: string, event: TaskEvent, command?: CommandRecord): Promise<ApplyOutcome> {
     return this.serial(() => {
       const outcome = this.#applyNow(taskID, event, command);
-      this.#schedule();
-      queueMicrotask(() => this.#pump());
+      this.#afterChange();
       return outcome;
     });
   }
 
-  /** Must run inside serial(). */
-  #applyNow(taskID: string, event: TaskEvent, command?: CommandRecord): ApplyOutcome {
-    if (this.#stopped) return { ok: false, reject: "runtime остановлен" };
-    const state = this.store.task(taskID);
-    if (!state) return { ok: false, reject: `задачи ${taskID} нет` };
-
-    const decision = decide(state, event);
-    const now = Date.now();
-    const outcome: ApplyOutcome = decision.ok ? { ok: true, state: decision.state } : { ok: false, reject: decision.reject };
-
-    this.store.transaction(() => {
-      if (decision.ok) {
-        const leaving = decision.state.status === "blocked" || TERMINAL_STATUSES.includes(decision.state.status);
-        if (leaving) this.store.cancelPendingIntents(taskID);
-        this.store.saveTask(decision.state, now);
-        this.store.addIntents(taskID, decision.intents, now);
-      }
-      if (command)
-        this.store.saveCommand({ id: command.id, method: command.method, request: command.request, result: command.result(outcome), now });
-    });
-
-    if (!decision.ok) this.#options.log(`${taskID}: ${event.type} отклонено: ${decision.reject}`);
-    else
-      this.#options.log(
-        `${taskID}: ${event.type} -> ${decision.state.status} [${decision.intents.map((intent) => intent.kind).join(", ")}]`,
-      );
-    return outcome;
-  }
-
-  /** Grants free slots to the oldest queued tasks. Must run inside serial(). */
-  #schedule(): void {
+  /** Reads worker sessions and turns finished turns, missing reports and stalls into events. */
+  async reconcile(): Promise<void> {
     if (this.#stopped) return;
-    const tasks = this.store.tasks();
-    let busy = tasks.filter((task) => SLOT_STATUSES.has(task.status)).length;
-
-    for (const task of tasks) {
-      if (busy >= this.#options.slots) break;
-      if (task.status !== "queued") continue;
-      if (this.#applyNow(task.id, { type: "slot-granted" }).ok) busy++;
-    }
+    await this.#watcher.check();
   }
 
   /**
    * Runs a command once per commandID: a repeat returns the stored result,
    * a different request under the same commandID is refused.
    */
-  runCommand(command: CommandRecord, target: { taskID: string; event: TaskEvent } | { reject: string }): Promise<unknown> {
+  runCommand(
+    command: CommandRecord,
+    target: { taskID: string; event: TaskEvent } | { error: string },
+  ): Promise<unknown> {
     return this.serial(() => {
       const existing = this.store.command(command.id);
       if (existing) {
@@ -143,15 +120,14 @@ export class Engine {
           : { ok: false, error: `commandID ${command.id} уже использован с другим запросом` };
       }
 
-      if ("reject" in target) {
-        const result = command.result({ ok: false, reject: target.reject });
-        this.store.saveCommand({ id: command.id, method: command.method, request: command.request, result, now: Date.now() });
+      if ("error" in target) {
+        const result = command.result({ ok: false, error: target.error });
+        this.#record(command, result, Date.now());
         return result;
       }
 
       const outcome = this.#applyNow(target.taskID, target.event, command);
-      this.#schedule();
-      queueMicrotask(() => this.#pump());
+      this.#afterChange();
       return command.result(outcome);
     });
   }
@@ -166,13 +142,70 @@ export class Engine {
       const now = Date.now();
       this.store.transaction(() => {
         this.store.insertTask(state, now);
-        this.store.saveCommand({ id: command.id, method: command.method, request: command.request, result, now });
+        this.#record(command, result, now);
       });
       this.#options.log(`${state.id}: принята (${state.workflow.id})`);
-      this.#schedule();
-      queueMicrotask(() => this.#pump());
+      this.#afterChange();
       return result;
     });
+  }
+
+  /** Must run inside serial(). */
+  #applyNow(taskID: string, event: TaskEvent, command?: CommandRecord): ApplyOutcome {
+    if (this.#stopped) return { ok: false, error: "runtime остановлен" };
+    const state = this.store.task(taskID);
+    if (!state) return { ok: false, error: `задачи ${taskID} нет` };
+
+    const decision = decide(state, event);
+    const now = Date.now();
+    const outcome: ApplyOutcome = decision.ok ? { ok: true, state: decision.state } : decision;
+
+    this.store.transaction(() => {
+      if (decision.ok) {
+        const leaving =
+          decision.state.status === "blocked" || TERMINAL_STATUSES.includes(decision.state.status);
+        if (leaving) this.store.cancelPendingIntents(taskID);
+        this.store.saveTask(decision.state, now);
+        this.store.addIntents(taskID, decision.intents, now);
+      }
+      if (command) this.#record(command, command.result(outcome), now);
+    });
+
+    if (!decision.ok) this.#options.log(`${taskID}: ${event.type} отклонено: ${decision.error}`);
+    else {
+      const kinds = decision.intents.map((intent) => intent.kind).join(", ");
+      this.#options.log(`${taskID}: ${event.type} -> ${decision.state.status} [${kinds}]`);
+    }
+    return outcome;
+  }
+
+  #record(command: CommandRecord, result: unknown, now: number): void {
+    this.store.saveCommand({
+      id: command.id,
+      method: command.method,
+      request: command.request,
+      result,
+      now,
+    });
+  }
+
+  /** Grants free slots and wakes the intent loop after a state change. Must run inside serial(). */
+  #afterChange(): void {
+    this.#schedule();
+    queueMicrotask(() => this.#pump());
+  }
+
+  /** Grants free slots to the oldest queued tasks. Must run inside serial(). */
+  #schedule(): void {
+    if (this.#stopped) return;
+    const tasks = this.store.tasks();
+    let busy = tasks.filter((task) => SLOT_STATUSES.has(task.status)).length;
+
+    for (const task of tasks) {
+      if (busy >= this.#options.slots) break;
+      if (task.status !== "queued") continue;
+      if (this.#applyNow(task.id, { type: "slot-granted" }).ok) busy++;
+    }
   }
 
   #pump(): void {
@@ -223,7 +256,7 @@ export class Engine {
     this.#options.log(`${head.taskID}: ${head.intent.kind} попытка ${attempts}: ${message}`);
 
     if (!permanent && attempts < this.#options.maxIntentAttempts) {
-      const delay = Math.min(this.#options.retryBaseMs * 2 ** (attempts - 1), 30_000);
+      const delay = Math.min(this.#options.retryBaseMs * 2 ** (attempts - 1), MAX_RETRY_DELAY_MS);
       await this.serial(() => this.store.deferIntent(head.id, Date.now() + delay, message));
       setTimeout(() => this.#pump(), delay + 5).unref();
       return;
@@ -234,49 +267,12 @@ export class Engine {
       if (pending) this.store.finishIntent(head.id, "failed", message);
       return pending;
     });
-    if (stillPending) await this.apply(head.taskID, { type: "intent-failed", intent: head.intent.kind, error: message });
-  }
-
-  /** Reads worker sessions and turns finished turns, missing reports and stalls into events. */
-  async reconcile(): Promise<void> {
-    if (this.#stopped) return;
-
-    const working = this.store.tasks().filter((task) => task.status === "active" && task.run?.phase === "working" && task.sessionReady);
-    for (const task of working) {
-      await this.#reconcileTask(task).catch((error: unknown) => {
-        if (!this.#opencodeDown) this.#options.log(`сверка ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
-        this.#opencodeDown = true;
+    if (stillPending) {
+      await this.apply(head.taskID, {
+        type: "intent-failed",
+        intent: head.intent.kind,
+        error: message,
       });
-    }
-  }
-
-  async #reconcileTask(task: TaskState): Promise<void> {
-    const run = task.run;
-    if (!run || !task.sessionID) return;
-
-    const session = await this.#options.opencode.session(task.sessionID, task.worktreePath);
-    const messages = await this.#options.opencode.messages(task.sessionID, task.worktreePath);
-    if (this.#opencodeDown) {
-      // Downtime does not count as a stall: the clock restarts when OpenCode answers again.
-      this.#opencodeDown = false;
-      this.#recoveredAt = Date.now();
-    }
-    if (!session || !messages) return;
-
-    const reading = readTurn(messages, deriveId("msg_", task.salt, run.id, "prompt"), run.id);
-    if (reading.kind === "ended") {
-      const event: TaskEvent = reading.report
-        ? { type: "stage-reported", stageRunID: run.id, outcome: reading.report.outcome, summary: reading.report.summary }
-        : { type: "turn-ended-without-report", stageRunID: run.id, detail: reading.detail };
-      await this.apply(task.id, event);
-      return;
-    }
-    if (reading.kind === "not-delivered") return;
-
-    const stage = task.workflow.stages[task.stageIndex];
-    const lastActivity = Math.max(session.time.updated, this.#recoveredAt);
-    if (stage && Date.now() - lastActivity > stageStallMinutes(stage) * this.#options.stallUnitMs) {
-      await this.apply(task.id, { type: "stalled", stageRunID: run.id });
     }
   }
 }
