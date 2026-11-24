@@ -33,7 +33,11 @@ export interface PromptCall {
   readonly text: string;
   readonly stageRunID: string | undefined;
   /** Appends an assistant message with a stage_report tool part. */
-  report(input: { outcome?: string; summary?: string; stageRunID?: string; status?: string } | Record<string, never>): void;
+  report(
+    input:
+      | { outcome?: string; summary?: string; stageRunID?: string; status?: string }
+      | Record<string, never>,
+  ): void;
   idle(outcome?: string): void;
   push(message: Omit<FakeMessage, "id">): void;
 }
@@ -46,6 +50,8 @@ export class FakeOpenCode {
   mcpServers = ["YouTrack", "gitlab"];
   models = [{ providerID: "openai", id: "gpt-5.6-luna" }];
   down = false;
+  /** Answers GET /api/session/:id without `location` and `time`, as a changed API would. */
+  breakSessionShape = false;
   hijackNextSession: string | null = null;
   onPrompt: (call: PromptCall) => void | Promise<void> = () => {};
   #server: Server | undefined;
@@ -111,11 +117,19 @@ export class FakeOpenCode {
           "outcome" in input || "summary" in input || "stageRunID" in input
             ? { stageRunID, outcome: "passed", summary: "готово", ...input }
             : {};
-        const status = "status" in input && typeof input.status === "string" ? input.status : "completed";
+        const status =
+          "status" in input && typeof input.status === "string" ? input.status : "completed";
         push({
           type: "assistant",
           finish: "tool-calls",
-          content: [{ type: "tool", id: this.nextID("call_"), name: "stage_report", state: { status, input: fullInput } }],
+          content: [
+            {
+              type: "tool",
+              id: this.nextID("call_"),
+              name: "stage_report",
+              state: { status, input: fullInput },
+            },
+          ],
         });
       },
       idle: (outcome = "succeeded") => push({ type: "idle", outcome }),
@@ -136,21 +150,35 @@ export class FakeOpenCode {
       case "GET /api/info":
         return { status: 200, body: { version: this.version, pid: 1, urls: [] } };
       case "GET /api/mcp":
-        return { status: 200, body: { data: this.mcpServers.map((name) => ({ name, status: { status: "connected" } })) } };
+        return {
+          status: 200,
+          body: {
+            data: this.mcpServers.map((name) => ({ name, status: { status: "connected" } })),
+          },
+        };
       case "GET /api/model":
         return { status: 200, body: { data: this.models } };
       case "POST /api/session":
         return { status: 200, body: { data: this.#createSession(body) } };
       case "GET /api/session/:id":
-        return session ? { status: 200, body: { data: view(session) } } : { status: 404 };
+        if (!session) return { status: 404 };
+        return {
+          status: 200,
+          body: { data: this.breakSessionShape ? { id: session.id } : view(session) },
+        };
       case "DELETE /api/session/:id":
         if (session) this.sessions.delete(session.id);
         return { status: session ? 204 : 404 };
       case "GET /api/session/:id/message":
-        return session ? { status: 200, body: { data: session.messages, cursor: { next: null } } } : { status: 404 };
+        return session
+          ? { status: 200, body: { data: session.messages, cursor: { next: null } } }
+          : { status: 404 };
       case "POST /api/session/:id/model":
         if (!session) return { status: 404 };
-        session.model = { variant: "default", ...(body.model as { providerID: string; id: string }) };
+        session.model = {
+          variant: "default",
+          ...(body.model as { providerID: string; id: string }),
+        };
         session.messages.push({ id: this.nextID("msg_"), type: "model-switched" });
         return { status: 204 };
       case "POST /api/session/:id/prompt":
@@ -168,7 +196,9 @@ export class FakeOpenCode {
         return { status: 200, body: { interrupted: true } };
       default:
         if (request.method === "GET" && parts[1] === "agent" && parts[2]) {
-          return this.agents.has(parts[2]) ? { status: 200, body: { data: { id: parts[2] } } } : { status: 404 };
+          return this.agents.has(parts[2])
+            ? { status: 200, body: { data: { id: parts[2] } } }
+            : { status: 404 };
         }
         return { status: 404, body: { error: `fake: no route ${route}` } };
     }
@@ -204,7 +234,8 @@ export class FakeOpenCode {
     const id = String(body.id);
     const existing = this.findMessage(id);
     if (existing) {
-      if (existing.session !== session || existing.message.type !== "user") return { status: 409, body: { _tag: "ConflictError" } };
+      if (existing.session !== session || existing.message.type !== "user")
+        return { status: 409, body: { _tag: "ConflictError" } };
       return { status: 200, body: { data: existing.message } };
     }
 
@@ -217,7 +248,13 @@ export class FakeOpenCode {
 }
 
 function view(session: FakeSession) {
-  const { messages: _messages, notes: _notes, interrupted: _interrupted, directory, ...rest } = session;
+  const {
+    messages: _messages,
+    notes: _notes,
+    interrupted: _interrupted,
+    directory,
+    ...rest
+  } = session;
   return { ...rest, location: { directory } };
 }
 

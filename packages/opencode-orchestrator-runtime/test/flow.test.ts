@@ -2,10 +2,18 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { SHELL_DENY } from "../src/core/permissions.js";
-import { answer, createHarness, DEFAULT_ROUTE, type Harness, makeRepo, sh, writingWorker } from "./harness.js";
+import {
+  answer,
+  createHarness,
+  DEFAULT_ROUTE,
+  type Harness,
+  makeRepo,
+  sh,
+  writingWorker,
+} from "./harness.js";
 
 let harness: Harness;
-afterEach(async () => harness?.dispose());
+afterEach(async () => harness.dispose());
 
 async function untilStatus(taskID: string, status: string) {
   return harness.waitFor(async () => {
@@ -21,15 +29,17 @@ function installHook(repo: string, script: string) {
 }
 
 describe("маршрут code → show → deliver", () => {
-  // случай 12
-  test("доходит до коммита в ветке задачи с одобренным деревом", async () => {
+  test("случай 12: доходит до коммита в ветке задачи с одобренным деревом", async () => {
     harness = await createHarness();
     harness.fake.onPrompt = writingWorker({ "hello.txt": "hi\n" });
     const repo = makeRepo();
     const lead = harness.fake.addLeadSession("ses_lead", repo);
 
     const taskID = await harness.start({ repo, sessionID: "ses_lead" });
-    const question = await harness.waitFor(async () => (await harness.questions())[0], "вопрос show");
+    const question = await harness.waitFor(
+      async () => (await harness.questions())[0],
+      "вопрос show",
+    );
     expect(question.kind).toBe("show");
     expect(question.files.map((file) => file.path)).toEqual(["hello.txt"]);
 
@@ -50,8 +60,7 @@ describe("маршрут code → show → deliver", () => {
     expect(lead.messages).toEqual([]);
   });
 
-  // случай 13
-  test("четвёртая задача ждёт места и стартует после завершения одной из трёх", async () => {
+  test("случай 13: четвёртая задача ждёт места и стартует после завершения одной из трёх", async () => {
     harness = await createHarness({ slots: 3 });
     const repo = makeRepo();
     harness.fake.onPrompt = (call) => {
@@ -67,7 +76,10 @@ describe("маршрут code → show → deliver", () => {
     expect((await harness.task(fourth)).status).toBe("queued");
 
     await harness.rpc("task.stop", { commandID: "stop-1", taskID: first });
-    await harness.waitFor(async () => (await harness.task(fourth)).status === "waiting", "четвёртая дошла до show");
+    await harness.waitFor(
+      async () => (await harness.task(fourth)).status === "waiting",
+      "четвёртая дошла до show",
+    );
   });
 });
 
@@ -83,24 +95,26 @@ describe("коммит и хуки", () => {
     return taskID;
   }
 
-  // случай 19
-  test("отказ pre-commit хука возвращает задачу на code с выводом хука", async () => {
+  test("случай 19: отказ pre-commit хука возвращает задачу на code с выводом хука", async () => {
     const repo = makeRepo();
     installHook(repo, 'echo "lint: missing semicolon" >&2; exit 1');
     const taskID = await toDeliver(repo, () => {});
 
     await harness.waitFor(
       () =>
-        [...harness.fake.sessions.values()].flatMap((session) => session.messages).filter((message) => message.type === "user").length >= 2,
+        [...harness.fake.sessions.values()]
+          .flatMap((session) => session.messages)
+          .filter((message) => message.type === "user").length >= 2,
       "повторный code",
     );
-    const prompts = [...harness.fake.sessions.values()].flatMap((session) => session.messages).filter((message) => message.type === "user");
+    const prompts = [...harness.fake.sessions.values()]
+      .flatMap((session) => session.messages)
+      .filter((message) => message.type === "user");
     expect(prompts.at(-1)?.text).toContain("lint: missing semicolon");
     expect((await harness.task(taskID)).stage).toBe("code");
   });
 
-  // случай 20
-  test("хук, изменивший файлы, откатывает коммит, правки остаются, затем снова code и show", async () => {
+  test("случай 20: хук, изменивший файлы, откатывает коммит, правки остаются, затем снова code и show", async () => {
     const repo = makeRepo();
     installHook(repo, 'printf "formatted\\n" > hello.txt && git add hello.txt');
     const taskID = await toDeliver(repo, (call) => {
@@ -110,15 +124,18 @@ describe("коммит и хуки", () => {
 
     const task = await harness.waitFor(async () => {
       const current = await harness.task(taskID);
-      return current.stage === "show" && current.status === "waiting" && (await harness.questions())[0]?.files[0] ? current : undefined;
+      return current.stage === "show" &&
+        current.status === "waiting" &&
+        (await harness.questions())[0]?.files[0]
+        ? current
+        : undefined;
     }, "второй show");
     expect(sh(repo, `git rev-list --count main..${task.branch}`)).toBe("0");
     expect(readFileSync(join(task.worktree, "hello.txt"), "utf8")).toBe("formatted\n");
     expect((await harness.questions())[0]?.files[0]?.patch).toContain("+formatted");
   });
 
-  // случай 21
-  test("файл, появившийся после одобрения, в коммит не попадает", async () => {
+  test("случай 21: файл, появившийся после одобрения, в коммит не попадает", async () => {
     harness = await createHarness();
     harness.fake.onPrompt = writingWorker({ "hello.txt": "hi\n" });
     const repo = makeRepo();
@@ -137,8 +154,7 @@ describe("коммит и хуки", () => {
 });
 
 describe("подготовка, модель, права", () => {
-  // случай 25
-  test("текст «нужны правки» переживает рестарт runtime и попадает в задание повторного code", async () => {
+  test("случай 25: текст «нужны правки» переживает рестарт runtime и попадает в задание повторного code", async () => {
     harness = await createHarness();
     harness.fake.onPrompt = writingWorker({ "hello.txt": "hi\n" });
     const repo = makeRepo();
@@ -146,7 +162,11 @@ describe("подготовка, модель, права", () => {
     await harness.waitFor(async () => (await harness.questions())[0], "show");
 
     harness.fake.onPrompt = () => {};
-    await answer(harness, { taskID, choice: "changes-requested", text: "назови файл greeting.txt" });
+    await answer(harness, {
+      taskID,
+      choice: "changes-requested",
+      text: "назови файл greeting.txt",
+    });
     await harness.restart("crash");
 
     const prompt = await harness.waitFor(
@@ -159,17 +179,22 @@ describe("подготовка, модель, права", () => {
     expect(prompt.text).toContain("Человек попросил правки");
   });
 
-  // случай 26
-  test("модель этапа подтверждена до задания, неизвестная модель даёт blocked без задания", async () => {
+  test("случай 26: модель этапа подтверждена до задания, неизвестная модель даёт blocked без задания", async () => {
     harness = await createHarness();
     const withModel = (id: string) => ({
       ...DEFAULT_ROUTE,
-      stages: [{ id: "code", uses: "code", model: { providerID: "openai", id } }, ...DEFAULT_ROUTE.stages.slice(1)],
+      stages: [
+        { id: "code", uses: "code", model: { providerID: "openai", id } },
+        ...DEFAULT_ROUTE.stages.slice(1),
+      ],
     });
 
     const good = await harness.start({ repo: makeRepo({ route: withModel("gpt-5.6-luna") }) });
     const session = await harness.waitFor(
-      () => [...harness.fake.sessions.values()].find((candidate) => candidate.messages.some((message) => message.type === "user")),
+      () =>
+        [...harness.fake.sessions.values()].find((candidate) =>
+          candidate.messages.some((message) => message.type === "user"),
+        ),
       "задание",
     );
     const switched = session.messages.findIndex((message) => message.type === "model-switched");
@@ -179,14 +204,17 @@ describe("подготовка, модель, права", () => {
 
     const bad = await harness.start({ repo: makeRepo({ route: withModel("gpt-0-nope") }) });
     await untilStatus(bad, "blocked");
-    const badSession = [...harness.fake.sessions.values()].find((candidate) => candidate.metadata.orchestratorTask === bad);
+    const badSession = [...harness.fake.sessions.values()].find(
+      (candidate) => candidate.metadata.orchestratorTask === bad,
+    );
     expect(badSession?.messages.some((message) => message.type === "user")).toBe(false);
   });
 
-  // случай 33
-  test("worktree получает файлы setup.copy и проходит setup.command до сессии; сбой даёт blocked без задания", async () => {
+  test("случай 33: worktree получает файлы setup.copy и проходит setup.command до сессии; сбой даёт blocked без задания", async () => {
     harness = await createHarness();
-    const repo = makeRepo({ config: { setup: { copy: [".env.local"], command: "cat .env.local > prepared.txt" } } });
+    const repo = makeRepo({
+      config: { setup: { copy: [".env.local"], command: "cat .env.local > prepared.txt" } },
+    });
     writeFileSync(join(repo, ".env.local"), "SECRET=1\n");
     harness.fake.onPrompt = (call) => {
       expect(readFileSync(join(call.session.directory, "prepared.txt"), "utf8")).toBe("SECRET=1\n");
@@ -200,11 +228,14 @@ describe("подготовка, модель, права", () => {
     await untilStatus(bad, "blocked");
     const question = (await harness.questions()).find((candidate) => candidate.taskID === bad);
     expect(question?.reason).toContain("boom");
-    expect([...harness.fake.sessions.values()].some((session) => session.metadata.orchestratorTask === bad)).toBe(false);
+    expect(
+      [...harness.fake.sessions.values()].some(
+        (session) => session.metadata.orchestratorTask === bad,
+      ),
+    ).toBe(false);
   });
 
-  // случай 35
-  test("правила сессии: общий список, deny проекта, MCP закрыт кроме mcpRead", async () => {
+  test("случай 35: правила сессии: общий список, deny проекта, MCP закрыт кроме mcpRead", async () => {
     harness = await createHarness();
     const repo = makeRepo({ config: { deny: ["*npm publish*"], mcpRead: ["YouTrack_get_issue"] } });
     await harness.start({ repo });
