@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "oxc"],
+  "categories": {
+    "correctness": "error"
+  },
+  "ignorePatterns": [".playwright-mcp", "**/dist", "**/node_modules"],
+  "overrides": [
+    {
+      "files": ["packages/opencode-orchestrator-runtime/src/core/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["node:*"],
+                "message": "Ядро чистое: без ввода-вывода, часов и процессов."
+              },
+              {
+                "group": ["../*"],
+                "message": "Ядро не импортирует остальной runtime."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

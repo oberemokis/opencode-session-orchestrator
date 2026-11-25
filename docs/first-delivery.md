@@ -126,7 +126,7 @@
 
 ### `opencode-orchestrator-runtime`
 
-Ядро `src/core`, чистый TS без часов, SQLite, git и OpenCode. Biome запрещает в нём импорты `node:*` и остального `src/`.
+Ядро `src/core`, чистый TS без часов, SQLite, git и OpenCode. oxlint запрещает в нём импорты `node:*` и остального `src/` (правило `no-restricted-imports` в `.oxlintrc.json`).
 
 - Схема маршрута на zod, `strict`. Этап: `id`, `uses` (`code`, `show`, `deliver`), `model?` (`{providerID, id, variant?}`), `instructions?`, `on?`, `limits?` (`retries` по умолчанию 2, `stallMinutes` по умолчанию 30). У `deliver` поле `delivery: {type: "local-commit"}`. Проверки: уникальные `id`, `goto` на существующий этап, перед `deliver` стоит `show` без правящих этапов между ними, `goto:deliver` разрешён только из `show`. Ошибка содержит путь к полю.
 - `decide(state, event) → {ok: true, state, intents} | {ok: false, error}`.

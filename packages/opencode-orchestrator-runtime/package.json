@@ -2,10 +2,10 @@
   "name": "opencode-orchestrator-runtime",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "bin": {
     "opencode-orchestrator": "./dist/cli.js"
   },
+  "type": "module",
   "exports": {
     "./rpc-client": "./dist/rpc-client.js",
     "./rpc-contract": "./dist/rpc-contract.js"

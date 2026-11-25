@@ -44,4 +44,4 @@ pnpm install
 pnpm check
 ```
 
-`pnpm check` запускает Biome, сборку, проверку типов и Vitest. Тесты разбиты на проекты: `core` (функция перехода и загрузчик маршрута), `runtime` (RPC runtime с поддельным OpenCode, настоящими git и SQLite) и `live`. Живой тест идёт против настоящей службы и пропускается без `ORCHESTRATOR_TEST_MODEL=<provider>/<model>`; службу он берёт из `ORCHESTRATOR_OPENCODE_URL` и `ORCHESTRATOR_OPENCODE_PASSWORD` или из `service.json`, и в ней должен быть подключён плагин.
+`pnpm check` запускает oxlint и oxfmt, сборку, проверку типов и Vitest. Тесты разбиты на проекты: `core` (функция перехода и загрузчик маршрута), `runtime` (RPC runtime с поддельным OpenCode, настоящими git и SQLite) и `live`. Живой тест идёт против настоящей службы и пропускается без `ORCHESTRATOR_TEST_MODEL=<provider>/<model>`; службу он берёт из `ORCHESTRATOR_OPENCODE_URL` и `ORCHESTRATOR_OPENCODE_PASSWORD` или из `service.json`, и в ней должен быть подключён плагин.

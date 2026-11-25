@@ -2,21 +2,22 @@
   "name": "opencode-orchestrator",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.17.0",
-  "engines": {
-    "node": ">=24.11.0"
-  },
   "scripts": {
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "biome check .",
-    "format": "biome format --write .",
+    "lint": "oxlint --deny-warnings && oxfmt --check",
+    "format": "oxfmt",
     "check": "pnpm run lint && pnpm run build && pnpm run typecheck && pnpm test"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.8",
+    "oxfmt": "0.80.0",
+    "oxlint": "1.95.0",
     "vitest": "catalog:"
-  }
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "packageManager": "pnpm@11.17.0"
 }

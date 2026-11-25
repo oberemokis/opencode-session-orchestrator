@@ -30,9 +30,11 @@ export interface PermissionInput {
 export function buildSessionPermissions(input: PermissionInput): PermissionRule[] {
   const shell = [...SHELL_DENY, ...input.projectDeny].map((resource) => deny("shell", resource));
   const mcpDeny = input.mcpServers.map((server) => deny(`${server}_*`, "*"));
-  const mcpAllow = input.mcpRead.map(
-    (tool): PermissionRule => ({ action: tool, resource: "*", effect: "allow" }),
-  );
+  const mcpAllow = input.mcpRead.map((tool): PermissionRule => ({
+    action: tool,
+    resource: "*",
+    effect: "allow",
+  }));
 
   return [
     ...shell,
