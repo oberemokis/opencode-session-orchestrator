@@ -57,6 +57,8 @@ describe("маршрут code → show → deliver", () => {
       expect.stringContaining(`готова: коммит в ветке ${done.branch}`),
     ]);
     expect(lead.notes.every((note) => !note.resume)).toBe(true);
+    // The TUI shows only the description of a synthetic message, so it must carry the phrase.
+    expect(lead.notes.map((note) => note.description)).toEqual(lead.notes.map((note) => note.text));
     expect(lead.messages).toEqual([]);
   });
 

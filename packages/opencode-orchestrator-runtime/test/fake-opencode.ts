@@ -24,7 +24,7 @@ export interface FakeSession {
   model: { providerID: string; id: string; variant?: string } | undefined;
   time: { created: number; updated: number };
   messages: FakeMessage[];
-  notes: { id: string; text: string; resume: boolean }[];
+  notes: { id: string; text: string; description: string | undefined; resume: boolean }[];
   interrupted: number;
 }
 
@@ -187,7 +187,12 @@ export class FakeOpenCode {
         if (!session) return { status: 404 };
         const id = String(body.id);
         if (!session.notes.some((note) => note.id === id))
-          session.notes.push({ id, text: String(body.text), resume: body.resume === true });
+          session.notes.push({
+            id,
+            text: String(body.text),
+            description: typeof body.description === "string" ? body.description : undefined,
+            resume: body.resume === true,
+          });
         return { status: 200, body: { data: { id } } };
       }
       case "POST /api/session/:id/interrupt":

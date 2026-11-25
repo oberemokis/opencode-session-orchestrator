@@ -227,7 +227,7 @@ export class OpenCodeClient {
       path: `/api/session/${sessionID}/synthetic`,
       schema: z.unknown(),
       directory,
-      body: { ...message, description: "opencode-orchestrator", resume: false },
+      body: { ...message, description: describeNote(message.text), resume: false },
     });
     if (response === undefined) throw new OpenCodeError(`чат ${sessionID} не найден`, 404);
   }
@@ -271,4 +271,14 @@ export class OpenCodeClient {
       if (!cursor || page.data.length === 0) return all;
     }
   }
+}
+
+const NOTE_DESCRIPTION_LIMIT = 300;
+
+// The TUI draws a synthetic message only through its description, so the phrase goes there.
+// A long reason is cut: the full text stays in the message the model reads.
+function describeNote(text: string): string {
+  return text.length > NOTE_DESCRIPTION_LIMIT
+    ? `${text.slice(0, NOTE_DESCRIPTION_LIMIT - 1)}…`
+    : text;
 }

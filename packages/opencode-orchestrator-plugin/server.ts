@@ -89,6 +89,8 @@ export default Plugin.define({
               sessionID,
               id: `msg_oo${randomUUID().replaceAll("-", "")}`,
               text,
+              // The TUI draws a synthetic message only through its description, never its text.
+              description: text,
               resume: false,
             });
           const text = prompt.text.trim();

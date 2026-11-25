@@ -182,6 +182,8 @@ export default Plugin.define({
     }
 
     ctx.keymap.layer(() => ({
+      // Without mode "global" the command exists but stays out of the palette and the slash list.
+      mode: "global",
       commands: [
         {
           id: "orchestrator.questions",
