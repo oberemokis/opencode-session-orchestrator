@@ -34,7 +34,7 @@ TypeScript-харнес для OpenCode V2. Пользователь ведёт 
    ```
 
 3. Положить в проект маршрут `.orchestrator/workflows/default.json` и при необходимости `.orchestrator/config.json` (формат в [маршрутах](docs/workflows.md#что-умеет-первая-поставка)). Проверить, что `git commit` в проекте проходит без участия человека: `serve` проверяет это при старте.
-4. Запустить runtime в отдельном терминале: `node packages/opencode-orchestrator-runtime/dist/cli.js serve`. Адрес и пароль службы он берёт из `$XDG_STATE_HOME/opencode/service.json`.
+4. Runtime запускается сам: плагин поднимает `serve` отдельным процессом, когда сокета нет (при загрузке плагина, в `/orchestrate` и пока открыт TUI). Лог лежит в `~/.local/state/opencode-orchestrator/runtime.log`. Нужен Node.js 24.11+: плагин ищет его в `ORCHESTRATOR_NODE`, в `PATH`, в Homebrew и в `~/.nvm`; если не нашёл или runtime сразу вышел, причина видна в ответе `/orchestrate`, а следующая попытка идёт не раньше чем через 30 секунд. Вручную, на переднем плане: `node packages/opencode-orchestrator-runtime/dist/cli.js serve`. Адрес и пароль службы runtime берёт из `$XDG_STATE_HOME/opencode/service.json`.
 5. В чате OpenCode: `/orchestrate <что сделать>`. Без аргументов команда показывает задачи, `/orchestrate stop <taskID>` останавливает задачу. Вопросы открываются в панели TUI сами; свернуть их можно Escape, вернуть командой «Оркестратор: открытые вопросы» из палитры.
 
 ## Обновление
@@ -42,7 +42,7 @@ TypeScript-харнес для OpenCode V2. Пользователь ведёт 
 Плагин подключён путём к клону, поэтому обновить его значит обновить клон:
 
 1. В клоне: `git pull && pnpm install && pnpm build`.
-2. Перезапустить runtime: остановить `serve` и запустить заново. Незавершённые задачи он сверяет со службой сам.
+2. Перезапустить runtime: остановить процесс (`pkill -f 'dist/cli.js serve'`, SIGTERM он обрабатывает), новый плагин поднимет сам в течение нескольких секунд, пока открыт TUI, или при ближайшем `/orchestrate`. Незавершённые задачи runtime сверяет со службой сам.
 3. Плагин перезагружается сам, когда меняется любой его файл (`server.ts`, `tui.ts`, `rpc.ts`). Пакет `opencode-orchestrator-runtime` плагин видит через симлинк в `node_modules`, правки по нему службе не видны: после них перезапустите службу OpenCode (закрыть и открыть OpenCode либо `opencode service restart`).
 
 Если клон переехал в другой каталог, поправьте путь в `plugins` глобального `opencode.json`: со старым путём плагин не загрузится.

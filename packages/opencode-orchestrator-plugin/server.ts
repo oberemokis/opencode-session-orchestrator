@@ -12,6 +12,7 @@ import {
   StatusReplySchema,
   type TaskSummary,
 } from "opencode-orchestrator-runtime/rpc-contract";
+import { ensureRuntime } from "opencode-orchestrator-runtime/spawn-runtime";
 import { z } from "zod";
 import { orchestratorRpc } from "./rpc.ts";
 
@@ -19,7 +20,11 @@ const WORKER_AGENT = "orchestrator-worker";
 const NOT_RUNNING =
   "[оркестратор] runtime не запущен. Запусти в терминале: opencode-orchestrator serve";
 
-const socket = socketPath(defaultStateDir());
+const stateDir = defaultStateDir();
+const socket = socketPath(stateDir);
+
+/** The runtime was not listening and could not be started; the message says why. */
+class RuntimeNotStartedError extends Error {}
 
 function runtime<Schema extends z.ZodType>(
   method: string,
@@ -29,7 +34,32 @@ function runtime<Schema extends z.ZodType>(
   return callRuntime({ socket, method, schema, input });
 }
 
+/** Calls the runtime; when nothing listens, starts it and repeats the call once. */
+async function runtimeStarting<Schema extends z.ZodType>(
+  method: string,
+  schema: Schema,
+  input: unknown = {},
+): Promise<z.infer<Schema>> {
+  try {
+    return await runtime(method, schema, input);
+  } catch (error) {
+    if (!(error instanceof RuntimeUnavailableError)) throw error;
+
+    const started = await ensureRuntime({ stateDir });
+    if (!started.ok) throw new RuntimeNotStartedError(started.reason);
+    return runtime(method, schema, input);
+  }
+}
+
+/** Starts the runtime in the background; the next poll of the TUI finds it. */
+function reviveRuntime(): void {
+  void ensureRuntime({ stateDir }).catch(() => undefined);
+}
+
 function describeError(error: unknown): string {
+  if (error instanceof RuntimeNotStartedError) {
+    return `[оркестратор] runtime не запущен и сам не поднялся: ${error.message}`;
+  }
   if (error instanceof RuntimeUnavailableError) return NOT_RUNNING;
   return `[оркестратор] ошибка: ${error instanceof Error ? error.message : String(error)}`;
 }
@@ -47,6 +77,8 @@ function formatStatus(tasks: readonly TaskSummary[]): string {
 export default Plugin.define({
   id: "opencode-orchestrator",
   setup: async (ctx) => {
+    reviveRuntime();
+
     await ctx.agent.transform((editor) => {
       editor.update(WORKER_AGENT, (agent) => {
         // Agent.Name is a branded string; the literal is a valid name.
@@ -98,12 +130,12 @@ export default Plugin.define({
 
           try {
             if (!text) {
-              const { tasks } = await runtime("status", StatusReplySchema);
+              const { tasks } = await runtimeStarting("status", StatusReplySchema);
               await reply(formatStatus(tasks));
               return;
             }
             if (stop?.[1]) {
-              const result = await runtime("task.stop", CommandReplySchema, {
+              const result = await runtimeStarting("task.stop", CommandReplySchema, {
                 commandID: randomUUID(),
                 taskID: stop[1],
               });
@@ -115,7 +147,7 @@ export default Plugin.define({
               return;
             }
 
-            const result = await runtime("task.start", CommandReplySchema, {
+            const result = await runtimeStarting("task.start", CommandReplySchema, {
               commandID: randomUUID(),
               text,
               sessionID,
@@ -139,7 +171,10 @@ export default Plugin.define({
           const { questions } = await runtime("question.get", QuestionsReplySchema);
           return { available: true, questions };
         } catch (error) {
-          if (error instanceof RuntimeUnavailableError) return { available: false, questions: [] };
+          if (error instanceof RuntimeUnavailableError) {
+            reviveRuntime();
+            return { available: false, questions: [] };
+          }
           throw error;
         }
       },
@@ -148,7 +183,10 @@ export default Plugin.define({
           const { tasks } = await runtime("status", StatusReplySchema);
           return { available: true, tasks };
         } catch (error) {
-          if (error instanceof RuntimeUnavailableError) return { available: false, tasks: [] };
+          if (error instanceof RuntimeUnavailableError) {
+            reviveRuntime();
+            return { available: false, tasks: [] };
+          }
           throw error;
         }
       },
